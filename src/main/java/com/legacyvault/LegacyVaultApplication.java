@@ -20,7 +20,7 @@ public class LegacyVaultApplication {
         SpringApplication.run(LegacyVaultApplication.class, args);
         System.out.println("========================================");
         System.out.println("  LegacyVault 后端服务启动成功");
-        System.out.println("  端口: 8080");
+        System.out.println("  端口: 8081");
         System.out.println("  Mock模式: 已启用（所有外部接口使用模拟数据）");
         System.out.println("========================================");
     }
