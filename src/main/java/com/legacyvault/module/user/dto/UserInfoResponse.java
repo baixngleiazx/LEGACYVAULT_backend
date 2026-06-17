@@ -22,6 +22,25 @@ public class UserInfoResponse {
     private LocalDateTime travelEndDate;
     private Long planId;
     private String planName;
+
+    // ===== 5 步注册流程状态 =====
+    private Integer step1Done;
+    private Integer step2Done;
+    private Integer step3Done;
+    private Integer step4Done;
+    private Integer step5Done;
+    private Integer step1Skipped;
+    private Integer step2Skipped;
+    private Integer step3Skipped;
+    private Integer step4Skipped;
+    private Integer step5Skipped;
+
+    // ===== 继承人门槛 =====
+    private Integer planHeirLimit;
+    private Integer minHeirsToUnlock;
+    private java.math.BigDecimal kycAssetThreshold;
+    private String kycRejectReason;
+
     private LocalDateTime lastLoginAt;
     private LocalDateTime createdAt;
 }

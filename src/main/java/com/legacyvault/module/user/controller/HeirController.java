@@ -1,8 +1,7 @@
 package com.legacyvault.module.user.controller;
 
 import com.legacyvault.common.Result;
-import com.legacyvault.module.user.dto.HeirRequest;
-import com.legacyvault.module.user.dto.HeirResponse;
+import com.legacyvault.module.user.dto.*;
 import com.legacyvault.module.user.service.HeirService;
 import com.legacyvault.util.RequestUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +44,18 @@ public class HeirController {
     }
 
     /**
+     * 编辑继承人
+     * PUT /api/heir/{heirId}
+     */
+    @PutMapping("/{heirId}")
+    public Result<HeirResponse> updateHeir(@PathVariable Long heirId,
+                                           @Valid @RequestBody HeirUpdateRequest request,
+                                           HttpServletRequest httpRequest) {
+        Long userId = RequestUtil.getCurrentUserId(httpRequest);
+        return Result.success("继承人已更新", heirService.updateHeir(userId, heirId, request));
+    }
+
+    /**
      * 删除继承人
      * DELETE /api/heir/{heirId}
      */
@@ -53,6 +64,17 @@ public class HeirController {
         Long userId = RequestUtil.getCurrentUserId(request);
         heirService.deleteHeir(userId, heirId);
         return Result.success("继承人已删除");
+    }
+
+    /**
+     * 重发继承人确认邀请
+     * POST /api/heir/{heirId}/resend-invite
+     */
+    @PostMapping("/{heirId}/resend-invite")
+    public Result<String> resendInvite(@PathVariable Long heirId, HttpServletRequest request) {
+        Long userId = RequestUtil.getCurrentUserId(request);
+        heirService.resendInvite(userId, heirId);
+        return Result.success("确认邀请已重发");
     }
 
     /**
@@ -66,13 +88,37 @@ public class HeirController {
     }
 
     /**
-     * 为继承人分配内容
-     * POST /api/heir/{heirId}/assign
+     * 为继承人分配内容（差异化分配）
+     * PUT /api/heir/{heirId}/assign
      */
-    @PostMapping("/{heirId}/assign")
-    public Result<String> assignContent(@PathVariable Long heirId, @RequestBody List<Long> contentIds, HttpServletRequest request) {
-        Long userId = RequestUtil.getCurrentUserId(request);
-        heirService.assignContent(userId, heirId, contentIds);
+    @PutMapping("/{heirId}/assign")
+    public Result<String> assignContent(@PathVariable Long heirId,
+                                        @RequestBody HeirAssignRequest request,
+                                        HttpServletRequest httpRequest) {
+        Long userId = RequestUtil.getCurrentUserId(httpRequest);
+        heirService.assignContent(userId, heirId, request);
         return Result.success("内容已分配");
+    }
+
+    /**
+     * 设置继承人解锁门槛
+     * PUT /api/heir/unlock-threshold
+     */
+    @PutMapping("/unlock-threshold")
+    public Result<String> setUnlockThreshold(@Valid @RequestBody UnlockThresholdRequest request,
+                                              HttpServletRequest httpRequest) {
+        Long userId = RequestUtil.getCurrentUserId(httpRequest);
+        heirService.setUnlockThreshold(userId, request);
+        return Result.success("解锁门槛已更新");
+    }
+
+    /**
+     * 查询解锁门槛
+     * GET /api/heir/unlock-threshold
+     */
+    @GetMapping("/unlock-threshold")
+    public Result<Integer> getUnlockThreshold(HttpServletRequest request) {
+        Long userId = RequestUtil.getCurrentUserId(request);
+        return Result.success(heirService.getUnlockThreshold(userId));
     }
 }

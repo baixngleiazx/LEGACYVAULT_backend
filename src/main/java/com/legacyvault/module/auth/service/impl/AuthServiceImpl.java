@@ -207,6 +207,19 @@ public class AuthServiceImpl implements AuthService {
         user.setKycStatus(Constants.KYC_STATUS_NONE);
         user.setSecurityScore(0);
         user.setTravelModeEnabled(0);
+        // 5 步注册流程：步骤1（开户）自动标记完成
+        user.setStep1Done(Constants.STEP_DONE);
+        user.setStep2Done(Constants.STEP_NOT_DONE);
+        user.setStep3Done(Constants.STEP_NOT_DONE);
+        user.setStep4Done(Constants.STEP_NOT_DONE);
+        user.setStep5Done(Constants.STEP_NOT_DONE);
+        user.setStep1Skipped(Constants.STEP_NOT_SKIPPED);
+        user.setStep2Skipped(Constants.STEP_NOT_SKIPPED);
+        user.setStep3Skipped(Constants.STEP_NOT_SKIPPED);
+        user.setStep4Skipped(Constants.STEP_NOT_SKIPPED);
+        user.setStep5Skipped(Constants.STEP_NOT_SKIPPED);
+        user.setPlanHeirLimit(Constants.HEIR_LIMIT_FREE);
+        user.setMinHeirsToUnlock(1);
         userMapper.insert(user);
 
         // 初始化心跳配置（默认90天周期）

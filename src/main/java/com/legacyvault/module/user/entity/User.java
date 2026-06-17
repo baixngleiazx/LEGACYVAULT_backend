@@ -52,8 +52,44 @@ public class User implements Serializable {
     /** KYC状态：0-未认证 1-已提交 2-已通过 3-已拒绝 */
     private Integer kycStatus;
 
+    /** KYC驳回原因 */
+    private String kycRejectReason;
+
     /** 安全健康分（0-100） */
     private Integer securityScore;
+
+    // ==================== 5 步注册流程状态 ====================
+    /** 步骤1（开户）是否完成：0-否 1-是 */
+    private Integer step1Done;
+    /** 步骤2（TOTP）是否完成：0-否 1-是 */
+    private Integer step2Done;
+    /** 步骤3（生物特征）是否完成：0-否 1-是 */
+    private Integer step3Done;
+    /** 步骤4（KYC）是否完成：0-否 1-是 */
+    private Integer step4Done;
+    /** 步骤5（恢复码）是否完成：0-否 1-是 */
+    private Integer step5Done;
+
+    /** 步骤1是否跳过：0-否 1-是 */
+    private Integer step1Skipped;
+    /** 步骤2是否跳过：0-否 1-是 */
+    private Integer step2Skipped;
+    /** 步骤3是否跳过：0-否 1-是 */
+    private Integer step3Skipped;
+    /** 步骤4是否跳过：0-否 1-是 */
+    private Integer step4Skipped;
+    /** 步骤5是否跳过：0-否 1-是 */
+    private Integer step5Skipped;
+
+    // ==================== 继承人解锁门槛 ====================
+    /** 单用户继承人绑定上限（受套餐动态控制） */
+    private Integer planHeirLimit;
+
+    /** 解锁资产最低核验继承人数门槛（默认 1） */
+    private Integer minHeirsToUnlock;
+
+    /** 触发后置 KYC 的资产阈值 */
+    private java.math.BigDecimal kycAssetThreshold;
 
     /** 旅行模式是否开启：0-否 1-是 */
     private Integer travelModeEnabled;

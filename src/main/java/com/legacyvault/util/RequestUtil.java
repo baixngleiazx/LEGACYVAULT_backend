@@ -23,6 +23,18 @@ public class RequestUtil {
     }
 
     /**
+     * 从请求中获取当前管理员ID
+     * （由AdminAuthInterceptor注入）
+     */
+    public static Long getCurrentAdminId(HttpServletRequest request) {
+        Object adminId = request.getAttribute("currentAdminId");
+        if (adminId == null) {
+            return null;
+        }
+        return (Long) adminId;
+    }
+
+    /**
      * 获取客户端真实IP地址
      */
     public static String getIpAddress(HttpServletRequest request) {

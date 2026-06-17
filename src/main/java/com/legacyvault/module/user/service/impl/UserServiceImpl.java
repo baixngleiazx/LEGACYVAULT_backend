@@ -3,8 +3,9 @@ package com.legacyvault.module.user.service.impl;
 import com.legacyvault.common.Constants;
 import com.legacyvault.common.ResultCode;
 import com.legacyvault.exception.BusinessException;
-import com.legacyvault.mock.MockKycService;
 import com.legacyvault.module.auth.service.AuditLogService;
+import com.legacyvault.module.kyc.dto.KycSubmitRequest;
+import com.legacyvault.module.kyc.service.KycService;
 import com.legacyvault.module.user.dto.UserInfoResponse;
 import com.legacyvault.module.user.entity.User;
 import com.legacyvault.module.user.mapper.UserMapper;
@@ -12,8 +13,6 @@ import com.legacyvault.module.user.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-
-import java.util.Map;
 
 /**
  * 用户服务实现
@@ -28,7 +27,7 @@ public class UserServiceImpl implements UserService {
     private UserMapper userMapper;
 
     @Autowired
-    private MockKycService mockKycService;
+    private KycService kycService;
 
     @Autowired
     private AuditLogService auditLogService;
@@ -54,6 +53,22 @@ public class UserServiceImpl implements UserService {
         response.setTravelStartDate(user.getTravelStartDate());
         response.setTravelEndDate(user.getTravelEndDate());
         response.setPlanId(user.getPlanId());
+        // 5 步注册流程状态
+        response.setStep1Done(user.getStep1Done());
+        response.setStep2Done(user.getStep2Done());
+        response.setStep3Done(user.getStep3Done());
+        response.setStep4Done(user.getStep4Done());
+        response.setStep5Done(user.getStep5Done());
+        response.setStep1Skipped(user.getStep1Skipped());
+        response.setStep2Skipped(user.getStep2Skipped());
+        response.setStep3Skipped(user.getStep3Skipped());
+        response.setStep4Skipped(user.getStep4Skipped());
+        response.setStep5Skipped(user.getStep5Skipped());
+        // 继承人与 KYC 门槛
+        response.setPlanHeirLimit(user.getPlanHeirLimit());
+        response.setMinHeirsToUnlock(user.getMinHeirsToUnlock());
+        response.setKycAssetThreshold(user.getKycAssetThreshold());
+        response.setKycRejectReason(user.getKycRejectReason());
         response.setLastLoginAt(user.getLastLoginAt());
         response.setCreatedAt(user.getCreatedAt());
         return response;
@@ -73,28 +88,10 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public void submitKyc(Long userId, String name, String idCardNo) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ResultCode.USER_NOT_FOUND);
-        }
-        if (user.getKycStatus() == Constants.KYC_STATUS_PASSED) {
-            throw new BusinessException("KYC已通过，无需重复提交");
-        }
-
-        // 调用Mock KYC服务
-        Map<String, Object> result = mockKycService.submitKyc(userId, name, idCardNo);
-
-        // 更新KYC状态
-        String status = (String) result.get("status");
-        if ("PASSED".equals(status)) {
-            user.setKycStatus(Constants.KYC_STATUS_PASSED);
-            user.setSecurityScore(Math.min(100, user.getSecurityScore() + 30));
-        } else {
-            user.setKycStatus(Constants.KYC_STATUS_REJECTED);
-        }
-        userMapper.updateById(user);
-
-        auditLogService.log(userId, Constants.AUDIT_MODULE_AUTH, "submit_kyc",
-                String.format("{\"result\":\"%s\"}", status));
+        // 委托给 KycService（保持原接口兼容性）
+        KycSubmitRequest request = new KycSubmitRequest();
+        request.setRealName(name);
+        request.setIdNo(idCardNo);
+        kycService.submit(userId, request);
     }
 }

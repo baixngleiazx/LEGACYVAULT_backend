@@ -26,14 +26,25 @@ public class JwtUtil {
     private LegacyVaultProperties properties;
 
     /**
-     * 生成JWT Token
+     * 生成JWT Token（默认 type=user）
      *
      * @param userId 用户ID
      * @return JWT Token字符串
      */
     public String generateToken(Long userId) {
+        return generateToken(userId, "user");
+    }
+
+    /**
+     * 生成带类型声明的 JWT Token
+     *
+     * @param userId 用户ID / 管理员ID
+     * @param type   "user" / "admin"
+     */
+    public String generateToken(Long userId, String type) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("userId", userId);
+        claims.put("type", type);
 
         long expireMs = properties.getJwt().getExpireHours() * 3600 * 1000L;
         Date expireDate = new Date(System.currentTimeMillis() + expireMs);
@@ -44,6 +55,22 @@ public class JwtUtil {
                 .setExpiration(expireDate)
                 .signWith(SignatureAlgorithm.HS256, properties.getJwt().getSecret())
                 .compact();
+    }
+
+    /**
+     * 解析 Token，提取 type 声明
+     */
+    public String parseTokenType(String token) {
+        try {
+            Claims claims = Jwts.parser()
+                    .setSigningKey(properties.getJwt().getSecret())
+                    .parseClaimsJws(token)
+                    .getBody();
+            Object type = claims.get("type");
+            return type != null ? type.toString() : "user";
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
