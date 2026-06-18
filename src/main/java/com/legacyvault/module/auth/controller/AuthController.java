@@ -124,4 +124,15 @@ public class AuthController {
         authService.useRecoveryCode(userId, code);
         return Result.success("恢复码已使用，触发流程已中止");
     }
+
+    /**
+     * 绑定邮箱或手机号，补齐 PRD 要求的邮箱 + 手机号身份锚定。
+     * POST /api/auth/bind-contact
+     */
+    @PostMapping("/bind-contact")
+    public Result<String> bindContact(@Valid @RequestBody BindContactRequest request, HttpServletRequest httpRequest) {
+        Long userId = RequestUtil.getCurrentUserId(httpRequest);
+        authService.bindContact(userId, request);
+        return Result.success("联系方式已绑定并验证");
+    }
 }

@@ -24,12 +24,17 @@ public class WebAuthnConfirmRequest {
     @NotBlank(message = "认证器数据不能为空")
     private String authenticatorData;
 
+    /** attestationObject（Base64Url） */
+    private String attestationObject;
+
     /** 签名（Base64，Mock 模式下可忽略） */
     private String signature;
 
-    /** 公钥（Base64） */
-    @NotBlank(message = "公钥不能为空")
+    /** 公钥或 attestation 原始材料（Base64Url，部分浏览器可通过 getPublicKey 获取） */
     private String publicKey;
+
+    /** 浏览器 origin */
+    private String origin;
 
     /** 设备名称（如 "My YubiKey 5"） */
     private String deviceName;

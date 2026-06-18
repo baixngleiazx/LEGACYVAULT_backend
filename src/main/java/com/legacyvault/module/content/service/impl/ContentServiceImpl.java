@@ -13,12 +13,17 @@ import com.legacyvault.module.content.entity.KeyShard;
 import com.legacyvault.module.content.mapper.EncryptedContentMapper;
 import com.legacyvault.module.content.mapper.KeyShardMapper;
 import com.legacyvault.module.content.service.ContentService;
+import com.legacyvault.module.user.entity.User;
+import com.legacyvault.module.user.mapper.UserMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -31,6 +36,17 @@ import java.util.stream.Collectors;
 @Service
 public class ContentServiceImpl implements ContentService {
 
+    private static final Set<String> SUPPORTED_TYPES = new HashSet<>(Arrays.asList(
+            Constants.CONTENT_TYPE_PRIVATE_KEY,
+            Constants.CONTENT_TYPE_ACCOUNT_PASSWORD,
+            Constants.CONTENT_TYPE_LAST_WORDS,
+            Constants.CONTENT_TYPE_FILE
+    ));
+
+    private static final int FREE_PRIVATE_KEY_LIMIT = 3;
+    private static final int FREE_PASSWORD_LIMIT = 10;
+    private static final long FREE_STORAGE_LIMIT_BYTES = 10L * 1024L * 1024L;
+
     @Autowired
     private EncryptedContentMapper contentMapper;
 
@@ -42,6 +58,9 @@ public class ContentServiceImpl implements ContentService {
 
     @Autowired
     private AuditLogService auditLogService;
+
+    @Autowired
+    private UserMapper userMapper;
 
     @Override
     public List<ContentResponse> listContents(Long userId, String contentType) {
@@ -60,17 +79,8 @@ public class ContentServiceImpl implements ContentService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ContentResponse createContent(Long userId, ContentRequest request) {
-        // 检查数量限制（简化处理）
-        Long count = contentMapper.selectCount(
-                new LambdaQueryWrapper<EncryptedContent>()
-                        .eq(EncryptedContent::getUserId, userId)
-                        .eq(EncryptedContent::getStatus, Constants.CONTENT_STATUS_NORMAL));
-
-        // 根据类型检查限制（Free: 私钥3条，密码10条）
-        if (Constants.CONTENT_TYPE_PRIVATE_KEY.equals(request.getContentType()) && count >= 3) {
-            // Pro/Vault用户跳过检查（简化处理：暂不校验套餐）
-            log.info("私钥数量达到Free套餐限制，实际使用时需根据套餐校验");
-        }
+        validateContentRequest(request);
+        enforcePlanLimits(userId, request);
 
         // 存储加密文件（Mock：存本地）
         String storagePath = mockStorageService.uploadEncryptedFile(userId, request.getEncryptedData(), request.getFileName());
@@ -104,6 +114,59 @@ public class ContentServiceImpl implements ContentService {
         return toResponse(content);
     }
 
+    private void validateContentRequest(ContentRequest request) {
+        if (!SUPPORTED_TYPES.contains(request.getContentType())) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "不支持的内容类型");
+        }
+        if (request.getContentHash() == null || !request.getContentHash().matches("^[a-fA-F0-9]{64}$")) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "内容哈希必须为SHA-256十六进制字符串");
+        }
+        if (request.getK2Shard() == null || request.getK2Shard().trim().isEmpty()
+                || request.getK3Shard() == null || request.getK3Shard().trim().isEmpty()) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "缺少Shamir托管分片");
+        }
+        if (Constants.CONTENT_TYPE_FILE.equals(request.getContentType())) {
+            if (request.getFileName() == null || request.getFileName().trim().isEmpty()) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "文件内容必须包含文件名");
+            }
+            if (request.getFileSize() == null || request.getFileSize() <= 0) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "文件大小无效");
+            }
+        }
+    }
+
+    private void enforcePlanLimits(Long userId, ContentRequest request) {
+        User user = userMapper.selectById(userId);
+        boolean freePlan = user == null || user.getPlanId() == null || user.getPlanId() == 1L;
+        if (!freePlan) {
+            return;
+        }
+
+        Long typeCount = contentMapper.selectCount(
+                new LambdaQueryWrapper<EncryptedContent>()
+                        .eq(EncryptedContent::getUserId, userId)
+                        .eq(EncryptedContent::getContentType, request.getContentType())
+                        .eq(EncryptedContent::getStatus, Constants.CONTENT_STATUS_NORMAL));
+
+        if (Constants.CONTENT_TYPE_PRIVATE_KEY.equals(request.getContentType()) && typeCount >= FREE_PRIVATE_KEY_LIMIT) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "Free套餐最多保存3条私钥");
+        }
+        if (Constants.CONTENT_TYPE_ACCOUNT_PASSWORD.equals(request.getContentType()) && typeCount >= FREE_PASSWORD_LIMIT) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "Free套餐最多保存10条账户密码");
+        }
+        long currentBytes = contentMapper.selectList(
+                new LambdaQueryWrapper<EncryptedContent>()
+                        .eq(EncryptedContent::getUserId, userId)
+                        .eq(EncryptedContent::getStatus, Constants.CONTENT_STATUS_NORMAL))
+                .stream()
+                .mapToLong(item -> item.getFileSize() == null ? 0L : item.getFileSize())
+                .sum();
+        long incomingBytes = request.getFileSize() == null ? 0L : request.getFileSize();
+        if (currentBytes + incomingBytes > FREE_STORAGE_LIMIT_BYTES) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "Free套餐总存储上限为10MB");
+        }
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteContent(Long userId, Long contentId) {
@@ -127,7 +190,10 @@ public class ContentServiceImpl implements ContentService {
         if (content == null || !content.getUserId().equals(userId)) {
             throw new BusinessException(ResultCode.CONTENT_NOT_FOUND);
         }
-        return toResponse(content);
+        ContentResponse response = toResponse(content);
+        response.setEncryptedData(content.getEncryptedData());
+        response.setK2Shard(content.getK2Shard());
+        return response;
     }
 
     /**

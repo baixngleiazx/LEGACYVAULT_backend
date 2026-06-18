@@ -2,6 +2,7 @@ package com.legacyvault.module.trigger.controller;
 
 import com.legacyvault.common.Result;
 import com.legacyvault.module.trigger.dto.ContactReplyRequest;
+import com.legacyvault.module.trigger.dto.TriggerAbortRequest;
 import com.legacyvault.module.trigger.dto.TriggerProcessResponse;
 import com.legacyvault.module.trigger.service.TriggerService;
 import com.legacyvault.util.RequestUtil;
@@ -50,9 +51,9 @@ public class TriggerController {
      * POST /api/trigger/abort
      */
     @PostMapping("/abort")
-    public Result<String> abortProcess(@RequestParam String totpCode, HttpServletRequest request) {
+    public Result<String> abortProcess(@Valid @RequestBody TriggerAbortRequest abortRequest, HttpServletRequest request) {
         Long userId = RequestUtil.getCurrentUserId(request);
-        triggerService.abortProcess(userId, totpCode);
+        triggerService.abortProcess(userId, abortRequest.getPassword(), abortRequest.getTotpCode());
         return Result.success("触发流程已中止");
     }
 

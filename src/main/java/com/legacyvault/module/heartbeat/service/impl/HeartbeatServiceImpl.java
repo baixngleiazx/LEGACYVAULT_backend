@@ -13,6 +13,8 @@ import com.legacyvault.module.heartbeat.entity.HeartbeatRecord;
 import com.legacyvault.module.heartbeat.mapper.HeartbeatConfigMapper;
 import com.legacyvault.module.heartbeat.mapper.HeartbeatRecordMapper;
 import com.legacyvault.module.heartbeat.service.HeartbeatService;
+import com.legacyvault.module.user.entity.User;
+import com.legacyvault.module.user.mapper.UserMapper;
 import com.legacyvault.util.TotpUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +46,9 @@ public class HeartbeatServiceImpl implements HeartbeatService {
     @Autowired
     private AuditLogService auditLogService;
 
+    @Autowired
+    private UserMapper userMapper;
+
     @Override
     public HeartbeatStatusResponse getHeartbeatStatus(Long userId) {
         HeartbeatConfig config = heartbeatConfigMapper.selectOne(
@@ -71,8 +76,15 @@ public class HeartbeatServiceImpl implements HeartbeatService {
         }
 
         response.setTravelModeEnabled(config.getNextDeadline() != null);
-        response.setTravelStartDate(config.getNextDeadline()); // 简化处理
-        response.setTravelEndDate(config.getNextDeadline());
+        User user = userMapper.selectById(userId);
+        boolean travelEnabled = user != null
+                && user.getTravelModeEnabled() != null
+                && user.getTravelModeEnabled() == 1
+                && user.getTravelEndDate() != null
+                && user.getTravelEndDate().isAfter(LocalDateTime.now());
+        response.setTravelModeEnabled(travelEnabled);
+        response.setTravelStartDate(travelEnabled ? user.getTravelStartDate() : null);
+        response.setTravelEndDate(travelEnabled ? user.getTravelEndDate() : null);
 
         return response;
     }
@@ -119,20 +131,29 @@ public class HeartbeatServiceImpl implements HeartbeatService {
 
     @Override
     public void setCheckInPeriod(Long userId, CheckInPeriodRequest request) {
+        int period = request.getPeriodDays();
+        if (period != 30 && period != 60 && period != 90 && period != 180) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "打卡周期仅支持30/60/90/180天");
+        }
+        User user = userMapper.selectById(userId);
+        if (user != null && (user.getPlanId() == null || user.getPlanId() == Constants.PLAN_FREE) && period != 90) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "Free套餐固定90天打卡周期");
+        }
+
         HeartbeatConfig config = heartbeatConfigMapper.selectOne(
                 new LambdaQueryWrapper<HeartbeatConfig>().eq(HeartbeatConfig::getUserId, userId));
         if (config == null) {
             throw new BusinessException(ResultCode.HEARTBEAT_CONFIG_NOT_FOUND);
         }
 
-        config.setCheckInPeriodDays(request.getPeriodDays());
+        config.setCheckInPeriodDays(period);
         // 重新计算截止日期
         LocalDateTime base = config.getLastCheckInAt() != null ? config.getLastCheckInAt() : LocalDateTime.now();
-        config.setNextDeadline(base.plusDays(request.getPeriodDays()));
+        config.setNextDeadline(base.plusDays(period));
         heartbeatConfigMapper.updateById(config);
 
         auditLogService.log(userId, Constants.AUDIT_MODULE_HEARTBEAT, "set_period",
-                String.format("{\"periodDays\":%d}", request.getPeriodDays()));
+                String.format("{\"periodDays\":%d}", period));
     }
 
     @Override
@@ -153,13 +174,23 @@ public class HeartbeatServiceImpl implements HeartbeatService {
         // 解析日期并校验最长180天
         LocalDate startDate = LocalDate.parse(request.getStartDate());
         LocalDate endDate = LocalDate.parse(request.getEndDate());
+        if (endDate.isBefore(startDate)) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "旅行模式结束日期不能早于开始日期");
+        }
         if (ChronoUnit.DAYS.between(startDate, endDate) > 180) {
             throw new BusinessException(ResultCode.TRAVEL_MODE_CONFLICT, "旅行模式最长180天");
         }
 
-        // 更新心跳配置中的旅行模式字段
-        // 简化处理：将截止日期设置为旅行结束日期
-        config.setNextDeadline(endDate.atStartOfDay());
+        User user = userMapper.selectById(userId);
+        if (user != null) {
+            user.setTravelModeEnabled(1);
+            user.setTravelStartDate(startDate.atStartOfDay());
+            user.setTravelEndDate(endDate.atTime(23, 59, 59));
+            userMapper.updateById(user);
+        }
+
+        // 旅行结束前暂停心跳触发，结束后按原周期恢复。
+        config.setNextDeadline(endDate.atTime(23, 59, 59));
         heartbeatConfigMapper.updateById(config);
 
         auditLogService.log(userId, Constants.AUDIT_MODULE_HEARTBEAT, "enable_travel_mode",
@@ -177,6 +208,14 @@ public class HeartbeatServiceImpl implements HeartbeatService {
         LocalDateTime base = config.getLastCheckInAt() != null ? config.getLastCheckInAt() : LocalDateTime.now();
         config.setNextDeadline(base.plusDays(config.getCheckInPeriodDays()));
         heartbeatConfigMapper.updateById(config);
+
+        User user = userMapper.selectById(userId);
+        if (user != null) {
+            user.setTravelModeEnabled(0);
+            user.setTravelStartDate(null);
+            user.setTravelEndDate(null);
+            userMapper.updateById(user);
+        }
 
         auditLogService.log(userId, Constants.AUDIT_MODULE_HEARTBEAT, "disable_travel_mode", null);
     }

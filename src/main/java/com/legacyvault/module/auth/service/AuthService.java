@@ -56,4 +56,9 @@ public interface AuthService {
      * 使用恢复码中止触发流程
      */
     void useRecoveryCode(Long userId, String recoveryCode);
+
+    /**
+     * 绑定并验证邮箱或手机号。
+     */
+    void bindContact(Long userId, BindContactRequest request);
 }

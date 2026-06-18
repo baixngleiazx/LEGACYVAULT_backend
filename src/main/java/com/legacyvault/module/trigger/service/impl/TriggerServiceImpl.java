@@ -126,11 +126,16 @@ public class TriggerServiceImpl implements TriggerService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void abortProcess(Long userId, String totpCode) {
+    public void abortProcess(Long userId, String password, String totpCode) {
         // 查找进行中的触发流程
         TriggerProcess process = findActiveProcess(userId);
         if (process == null) {
             throw new BusinessException(ResultCode.TRIGGER_PROCESS_NOT_FOUND);
+        }
+
+        User user = userMapper.selectById(userId);
+        if (user == null || !SecurityUtil.verifyPassword(password, user.getPasswordHash())) {
+            throw new BusinessException(ResultCode.PASSWORD_ERROR);
         }
 
         // 验证TOTP

@@ -26,7 +26,7 @@ public interface TriggerService {
     /**
      * 中止触发流程（用户登录中止）
      */
-    void abortProcess(Long userId, String totpCode);
+    void abortProcess(Long userId, String password, String totpCode);
 
     /**
      * 中止触发流程（恢复码中止）

@@ -3,6 +3,7 @@ package com.legacyvault.module.delivery.controller;
 import com.legacyvault.common.Result;
 import com.legacyvault.module.delivery.dto.DeliveryContentResponse;
 import com.legacyvault.module.delivery.dto.DeliveryLinkResponse;
+import com.legacyvault.module.delivery.dto.DeliveryOtpRequest;
 import com.legacyvault.module.delivery.dto.DeliveryVerifyRequest;
 import com.legacyvault.module.delivery.service.DeliveryService;
 import com.legacyvault.util.RequestUtil;
@@ -46,5 +47,15 @@ public class DeliveryController {
         String ip = RequestUtil.getIpAddress(httpRequest);
         String ua = RequestUtil.getUserAgent(httpRequest);
         return Result.success(deliveryService.verifyAndDecrypt(request, ip, ua));
+    }
+
+    /**
+     * 发送/重发交付核验 OTP（继承人访问，无需登录）
+     * POST /api/delivery/send-otp
+     */
+    @PostMapping("/send-otp")
+    public Result<String> sendOtp(@Valid @RequestBody DeliveryOtpRequest request) {
+        deliveryService.sendDeliveryOtp(request);
+        return Result.success("验证码已发送");
     }
 }

@@ -1,0 +1,14 @@
+legacy-vault:
+  mock-mode-enabled: ${LEGACY_VAULT_MOCK_MODE:false}
+  jwt:
+    secret: ${LEGACY_VAULT_JWT_SECRET}
+
+spring:
+  datasource:
+    url: ${LEGACY_VAULT_DB_URL}
+    username: ${LEGACY_VAULT_DB_USERNAME}
+    password: ${LEGACY_VAULT_DB_PASSWORD}
+  redis:
+    host: ${LEGACY_VAULT_REDIS_HOST}
+    port: ${LEGACY_VAULT_REDIS_PORT:6379}
+    password: ${LEGACY_VAULT_REDIS_PASSWORD:}

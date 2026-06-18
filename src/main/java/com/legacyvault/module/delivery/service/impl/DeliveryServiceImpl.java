@@ -6,7 +6,9 @@ import com.legacyvault.common.ResultCode;
 import com.legacyvault.config.LegacyVaultProperties;
 import com.legacyvault.exception.BusinessException;
 import com.legacyvault.mock.MockBlockchainService;
+import com.legacyvault.mock.MockEmailService;
 import com.legacyvault.mock.MockFaceRecognitionService;
+import com.legacyvault.mock.MockSmsService;
 import com.legacyvault.module.auth.entity.VerificationCode;
 import com.legacyvault.module.auth.mapper.VerificationCodeMapper;
 import com.legacyvault.module.auth.service.AuditLogService;
@@ -14,6 +16,7 @@ import com.legacyvault.module.content.entity.EncryptedContent;
 import com.legacyvault.module.content.mapper.EncryptedContentMapper;
 import com.legacyvault.module.delivery.dto.DeliveryContentResponse;
 import com.legacyvault.module.delivery.dto.DeliveryLinkResponse;
+import com.legacyvault.module.delivery.dto.DeliveryOtpRequest;
 import com.legacyvault.module.delivery.dto.DeliveryVerifyRequest;
 import com.legacyvault.module.delivery.entity.DeliveryAccessLog;
 import com.legacyvault.module.delivery.entity.DeliveryLink;
@@ -21,7 +24,9 @@ import com.legacyvault.module.delivery.mapper.DeliveryAccessLogMapper;
 import com.legacyvault.module.delivery.mapper.DeliveryLinkMapper;
 import com.legacyvault.module.delivery.service.DeliveryService;
 import com.legacyvault.module.user.entity.Heir;
+import com.legacyvault.module.user.entity.HeirContentAssignment;
 import com.legacyvault.module.user.mapper.HeirMapper;
+import com.legacyvault.module.user.mapper.HeirContentAssignmentMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -32,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.legacyvault.util.SecurityUtil;
 
 /**
  * 遗产交付服务实现
@@ -56,6 +62,9 @@ public class DeliveryServiceImpl implements DeliveryService {
     private HeirMapper heirMapper;
 
     @Autowired
+    private HeirContentAssignmentMapper assignmentMapper;
+
+    @Autowired
     private VerificationCodeMapper verificationCodeMapper;
 
     @Autowired
@@ -63,6 +72,12 @@ public class DeliveryServiceImpl implements DeliveryService {
 
     @Autowired
     private MockBlockchainService mockBlockchainService;
+
+    @Autowired
+    private MockEmailService mockEmailService;
+
+    @Autowired
+    private MockSmsService mockSmsService;
 
     @Autowired
     private LegacyVaultProperties properties;
@@ -104,31 +119,56 @@ public class DeliveryServiceImpl implements DeliveryService {
     }
 
     @Override
+    public void sendDeliveryOtp(DeliveryOtpRequest request) {
+        DeliveryLink link = loadValidLink(request.getLinkToken());
+        Heir heir = heirMapper.selectById(link.getHeirId());
+        if (heir == null) {
+            throw new BusinessException(ResultCode.HEIR_NOT_FOUND);
+        }
+        String channel = request.getChannel();
+        String target;
+        if ("email".equals(channel)) {
+            target = heir.getEmail();
+        } else if ("phone".equals(channel)) {
+            target = heir.getPhone();
+        } else {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "渠道仅支持email或phone");
+        }
+        if (target == null || target.trim().isEmpty()) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "继承人缺少对应渠道联系方式");
+        }
+
+        String code = SecurityUtil.generateVerifyCode(6);
+        VerificationCode vc = new VerificationCode();
+        vc.setTarget(target);
+        vc.setCode(code);
+        vc.setCodeType("delivery_check");
+        vc.setChannel(channel);
+        vc.setIsUsed(0);
+        vc.setExpireAt(LocalDateTime.now().plusMinutes(5));
+        vc.setMockData(String.format("{\"linkId\":%d,\"heirId\":%d}", link.getId(), link.getHeirId()));
+        verificationCodeMapper.insert(vc);
+
+        if ("email".equals(channel)) {
+            mockEmailService.sendVerifyCode(target, code, "delivery_check");
+        } else {
+            mockSmsService.sendVerifyCode(target, code);
+        }
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public List<DeliveryContentResponse> verifyAndDecrypt(DeliveryVerifyRequest request, String ipAddress, String userAgent) {
         // 1. 校验交付链接
-        DeliveryLink link = deliveryLinkMapper.selectOne(
-                new LambdaQueryWrapper<DeliveryLink>().eq(DeliveryLink::getLinkToken, request.getLinkToken()));
-        if (link == null) {
-            throw new BusinessException(ResultCode.DELIVERY_LINK_INVALID);
-        }
-
-        // 检查链接状态
-        if (link.getStatus() == Constants.LINK_STATUS_LOCKED) {
-            throw new BusinessException(ResultCode.DELIVERY_LINK_LOCKED);
-        }
-        if (link.getStatus() == Constants.LINK_STATUS_USED) {
-            throw new BusinessException(ResultCode.DELIVERY_LINK_USED);
-        }
-        if (link.getExpiresAt().isBefore(LocalDateTime.now())) {
-            link.setStatus(Constants.LINK_STATUS_INVALID);
-            deliveryLinkMapper.updateById(link);
-            throw new BusinessException(ResultCode.DELIVERY_LINK_EXPIRED);
+        DeliveryLink link = loadValidLink(request.getLinkToken());
+        Heir heir = heirMapper.selectById(link.getHeirId());
+        if (heir == null) {
+            throw new BusinessException(ResultCode.HEIR_NOT_FOUND);
         }
 
         // 2. 三重身份核验
         // 2.1 邮箱OTP验证
-        boolean emailVerified = verifyOtp(request.getEmailOtp(), link.getHeirId(), "email");
+        boolean emailVerified = verifyOtp(request.getEmailOtp(), heir.getEmail(), "email");
         if (!emailVerified) {
             recordAccessFailure(link, "identity_check", ipAddress, userAgent);
             incrementFailCount(link);
@@ -136,37 +176,37 @@ public class DeliveryServiceImpl implements DeliveryService {
         }
 
         // 2.2 手机OTP验证
-        boolean phoneVerified = verifyOtp(request.getPhoneOtp(), link.getHeirId(), "phone");
+        boolean phoneVerified = verifyOtp(request.getPhoneOtp(), heir.getPhone(), "phone");
         if (!phoneVerified) {
             recordAccessFailure(link, "identity_check", ipAddress, userAgent);
             incrementFailCount(link);
             throw new BusinessException(ResultCode.DELIVERY_IDENTITY_VERIFY_FAILED, "手机验证码错误");
         }
 
-        // 2.3 人脸识别（Mock）
-        if (request.getFaceImageBase64() != null) {
-            Heir heir = heirMapper.selectById(link.getHeirId());
-            Map<String, Object> faceResult = mockFaceRecognitionService.verifyFace(
-                    link.getUserId(), link.getHeirId(), request.getFaceImageBase64());
-            if (!(Boolean) faceResult.get("verified")) {
-                recordAccessFailure(link, "identity_check", ipAddress, userAgent);
-                incrementFailCount(link);
-                throw new BusinessException(ResultCode.DELIVERY_IDENTITY_VERIFY_FAILED, "人脸核验未通过");
-            }
+        // 2.3 人脸识别（Mock/真实服务由服务层内部开关控制）
+        Map<String, Object> faceResult = mockFaceRecognitionService.verifyFace(
+                link.getUserId(), link.getHeirId(), request.getFaceImageBase64());
+        if (!(Boolean) faceResult.get("verified")) {
+            recordAccessFailure(link, "identity_check", ipAddress, userAgent);
+            incrementFailCount(link);
+            throw new BusinessException(ResultCode.DELIVERY_IDENTITY_VERIFY_FAILED, "人脸核验未通过");
         }
 
-        // 3. 核验通过，标记链接已使用
-        link.setStatus(Constants.LINK_STATUS_USED);
-        link.setUsedAt(LocalDateTime.now());
-        deliveryLinkMapper.updateById(link);
+        // 3. 仅返回分配给该继承人的内容
+        List<Long> assignedContentIds = assignmentMapper.selectList(
+                new LambdaQueryWrapper<HeirContentAssignment>()
+                        .eq(HeirContentAssignment::getHeirId, link.getHeirId()))
+                .stream()
+                .map(HeirContentAssignment::getContentId)
+                .collect(Collectors.toList());
+        if (assignedContentIds.isEmpty()) {
+            throw new BusinessException(ResultCode.CONTENT_NOT_FOUND, "当前继承人没有被分配可交付内容");
+        }
 
-        // 记录成功访问
-        recordAccessSuccess(link, "identity_check", ipAddress, userAgent, request.getDeviceFingerprint());
-
-        // 4. 获取用户的所有加密内容并返回（模拟解密）
         List<EncryptedContent> contents = contentMapper.selectList(
                 new LambdaQueryWrapper<EncryptedContent>()
                         .eq(EncryptedContent::getUserId, link.getUserId())
+                        .in(EncryptedContent::getId, assignedContentIds)
                         .eq(EncryptedContent::getStatus, Constants.CONTENT_STATUS_NORMAL));
 
         List<DeliveryContentResponse> responses = new ArrayList<>();
@@ -186,9 +226,11 @@ public class DeliveryServiceImpl implements DeliveryService {
             }
 
             resp.setTitle(content.getTitle());
-            // 模拟解密：实际应由浏览器WebCrypto在本地完成
-            // 这里直接返回密文，前端需用Shamir重组密钥后本地解密
-            resp.setDecryptedData("[需浏览器本地WebCrypto解密] " + content.getEncryptedData().substring(0, Math.min(50, content.getEncryptedData().length())) + "...");
+            resp.setEncryptedData(content.getEncryptedData());
+            resp.setContentHash(content.getContentHash());
+            resp.setK2Shard(content.getK2Shard());
+            resp.setK3Shard(content.getK3Shard());
+            resp.setDecryptedData(null);
             resp.setFileName(content.getFileName());
             resp.setFileSize(content.getFileSize());
             resp.setAccessedAt(LocalDateTime.now());
@@ -205,6 +247,13 @@ public class DeliveryServiceImpl implements DeliveryService {
             recordAccessSuccess(link, "decrypt", ipAddress, userAgent, request.getDeviceFingerprint());
         }
 
+        // 4. 授权材料准备成功后，标记链接已使用
+        link.setStatus(Constants.LINK_STATUS_USED);
+        link.setUsedAt(LocalDateTime.now());
+        deliveryLinkMapper.updateById(link);
+
+        recordAccessSuccess(link, "identity_check", ipAddress, userAgent, request.getDeviceFingerprint());
+
         auditLogService.log(link.getUserId(), Constants.AUDIT_MODULE_DELIVERY, "delivery_access",
                 String.format("{\"heirId\":%d,\"linkId\":%d}", link.getHeirId(), link.getId()));
         log.info("遗产交付完成 | heirId={} | 内容数={}", link.getHeirId(), responses.size());
@@ -215,7 +264,27 @@ public class DeliveryServiceImpl implements DeliveryService {
     /**
      * 验证OTP（简化处理，直接校验验证码表）
      */
-    private boolean verifyOtp(String otp, Long heirId, String channel) {
+    private DeliveryLink loadValidLink(String linkToken) {
+        DeliveryLink link = deliveryLinkMapper.selectOne(
+                new LambdaQueryWrapper<DeliveryLink>().eq(DeliveryLink::getLinkToken, linkToken));
+        if (link == null) {
+            throw new BusinessException(ResultCode.DELIVERY_LINK_INVALID);
+        }
+        if (link.getStatus() == Constants.LINK_STATUS_LOCKED) {
+            throw new BusinessException(ResultCode.DELIVERY_LINK_LOCKED);
+        }
+        if (link.getStatus() == Constants.LINK_STATUS_USED) {
+            throw new BusinessException(ResultCode.DELIVERY_LINK_USED);
+        }
+        if (link.getExpiresAt().isBefore(LocalDateTime.now())) {
+            link.setStatus(Constants.LINK_STATUS_INVALID);
+            deliveryLinkMapper.updateById(link);
+            throw new BusinessException(ResultCode.DELIVERY_LINK_EXPIRED);
+        }
+        return link;
+    }
+
+    private boolean verifyOtp(String otp, String target, String channel) {
         // Mock模式：任何6位数字都通过
         if (properties.getMockModeEnabled()) {
             return otp != null && otp.length() == 6;
@@ -223,7 +292,10 @@ public class DeliveryServiceImpl implements DeliveryService {
         // 正式模式：查数据库验证
         VerificationCode vc = verificationCodeMapper.selectOne(
                 new LambdaQueryWrapper<VerificationCode>()
+                        .eq(VerificationCode::getTarget, target)
                         .eq(VerificationCode::getCode, otp)
+                        .eq(VerificationCode::getCodeType, "delivery_check")
+                        .eq(VerificationCode::getChannel, channel)
                         .eq(VerificationCode::getIsUsed, 0)
                         .gt(VerificationCode::getExpireAt, LocalDateTime.now())
                         .last("LIMIT 1"));

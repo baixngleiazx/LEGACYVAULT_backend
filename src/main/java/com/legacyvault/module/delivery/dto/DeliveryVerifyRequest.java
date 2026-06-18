@@ -17,7 +17,8 @@ public class DeliveryVerifyRequest {
     @NotBlank(message = "手机OTP不能为空")
     private String phoneOtp;
 
-    /** 人脸图片Base64（Mock阶段可选） */
+    /** 人脸图片Base64。Mock模式仍需提交采集占位数据，保证三重核验流程一致。 */
+    @NotBlank(message = "人脸核验数据不能为空")
     private String faceImageBase64;
 
     /** 设备指纹 */

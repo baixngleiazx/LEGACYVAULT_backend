@@ -21,8 +21,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -36,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 public class WebAuthnServiceImpl implements WebAuthnService {
 
     private static final long CHALLENGE_EXPIRE_MINUTES = 5;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     @Autowired
     private WebAuthnCredentialMapper webAuthnCredentialMapper;
@@ -55,6 +61,9 @@ public class WebAuthnServiceImpl implements WebAuthnService {
     @Autowired
     private AuditLogService auditLogService;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @Override
     public WebAuthnInitResponse initRegistration(Long userId) {
         User user = userMapper.selectById(userId);
@@ -62,14 +71,15 @@ public class WebAuthnServiceImpl implements WebAuthnService {
             throw new BusinessException(ResultCode.USER_NOT_FOUND);
         }
 
-        // 生成挑战值
-        String challenge = SecurityUtil.generateToken() + SecurityUtil.generateToken();
+        byte[] challengeBytes = new byte[32];
+        SECURE_RANDOM.nextBytes(challengeBytes);
+        String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(challengeBytes);
         String redisKey = Constants.REDIS_WEBAUTHN_CHALLENGE_PREFIX + userId;
         redisTemplate.opsForValue().set(redisKey, challenge, CHALLENGE_EXPIRE_MINUTES, TimeUnit.MINUTES);
 
         WebAuthnInitResponse resp = new WebAuthnInitResponse();
         resp.setChallenge(challenge);
-        resp.setRpId("legacy-vault.local");
+        resp.setRpId("localhost");
         resp.setRpName(properties.getTotp().getIssuer());
         resp.setUserId(String.valueOf(userId));
         resp.setUserName(user.getEmail() != null ? user.getEmail() : user.getPhone());
@@ -97,16 +107,16 @@ public class WebAuthnServiceImpl implements WebAuthnService {
             throw new BusinessException("WebAuthn 挑战已过期，请重新初始化");
         }
 
-        // Mock 模式：直接接受任何响应；真实模式需调用 WebAuthnManager.finishRegistration 校验
+        // Mock 模式兼容自动化自测；真实模式至少校验浏览器 WebAuthn clientData。
         if (!properties.getMockModeEnabled()) {
-            log.warn("真实 WebAuthn 校验暂未接入，请使用 Mock 模式");
+            validateClientData((String) challenge, request);
         }
 
         // 持久化凭证
         WebAuthnCredential credential = new WebAuthnCredential();
         credential.setUserId(userId);
         credential.setCredentialId(request.getCredentialId());
-        credential.setPublicKey(request.getPublicKey());
+        credential.setPublicKey(resolvePublicKeyMaterial(request));
         credential.setSignCount(0L);
         credential.setDeviceName(request.getDeviceName() != null ? request.getDeviceName() : "YubiKey");
         credential.setBoundAt(LocalDateTime.now());
@@ -134,5 +144,38 @@ public class WebAuthnServiceImpl implements WebAuthnService {
         auditLogService.log(userId, Constants.AUDIT_MODULE_AUTH, "bind_webauthn",
                 String.format("{\"device\":\"%s\"}", credential.getDeviceName()));
         log.info("WebAuthn 凭证绑定成功 | userId={} | device={}", userId, credential.getDeviceName());
+    }
+
+    private void validateClientData(String expectedChallenge, WebAuthnConfirmRequest request) {
+        try {
+            String clientDataJson = new String(Base64.getUrlDecoder().decode(request.getClientDataJSON()), StandardCharsets.UTF_8);
+            JsonNode clientData = objectMapper.readTree(clientDataJson);
+            if (!"webauthn.create".equals(clientData.path("type").asText())) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn类型不正确");
+            }
+            if (!expectedChallenge.equals(clientData.path("challenge").asText())) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn挑战值不匹配");
+            }
+            String origin = clientData.path("origin").asText();
+            if (origin == null || origin.isEmpty()) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn origin缺失");
+            }
+            if (request.getAttestationObject() == null || request.getAttestationObject().isEmpty()) {
+                throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn attestationObject缺失");
+            }
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn数据不是有效Base64Url");
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(ResultCode.PARAM_ERROR, "WebAuthn客户端数据解析失败");
+        }
+    }
+
+    private String resolvePublicKeyMaterial(WebAuthnConfirmRequest request) {
+        if (request.getPublicKey() != null && !request.getPublicKey().isEmpty()) {
+            return request.getPublicKey();
+        }
+        return request.getAttestationObject();
     }
 }

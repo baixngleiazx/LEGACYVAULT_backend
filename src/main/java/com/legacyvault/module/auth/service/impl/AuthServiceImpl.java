@@ -18,6 +18,7 @@ import com.legacyvault.module.auth.service.AuthService;
 import com.legacyvault.module.auth.service.AuditLogService;
 import com.legacyvault.module.heartbeat.entity.HeartbeatConfig;
 import com.legacyvault.module.heartbeat.mapper.HeartbeatConfigMapper;
+import com.legacyvault.module.trigger.service.TriggerService;
 import com.legacyvault.module.user.entity.User;
 import com.legacyvault.module.user.mapper.UserMapper;
 import com.legacyvault.util.JwtUtil;
@@ -79,6 +80,9 @@ public class AuthServiceImpl implements AuthService {
 
     @Autowired
     private AuditLogService auditLogService;
+
+    @Autowired
+    private TriggerService triggerService;
 
     /**
      * 发送验证码
@@ -516,8 +520,64 @@ public class AuthServiceImpl implements AuthService {
         rc.setUsedAt(LocalDateTime.now());
         recoveryCodeMapper.updateById(rc);
 
+        // 恢复码在 PRD 中是触发流程中止凭据。不存在进行中流程时不阻断恢复码消耗，
+        // 保持“离线确认用户活跃”的审计语义。
+        try {
+            triggerService.abortProcessByRecoveryCode(userId, recoveryCode);
+        } catch (BusinessException e) {
+            if (e.getCode() != ResultCode.TRIGGER_PROCESS_NOT_FOUND.getCode()) {
+                throw e;
+            }
+            log.info("恢复码已验证，但当前无进行中的触发流程 | userId={}", userId);
+        }
+
         auditLogService.log(userId, Constants.AUDIT_MODULE_AUTH, "use_recovery_code", null);
         log.info("恢复码已使用 | userId={}", userId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void bindContact(Long userId, BindContactRequest request) {
+        String target = request.getTarget().trim();
+        String targetType = PhoneUtil.detectTargetType(target);
+        if (targetType == null) {
+            throw new BusinessException(ResultCode.TARGET_FORMAT_ERROR);
+        }
+        if ("phone".equals(targetType) && !PhoneUtil.isValidPhone(target)) {
+            throw new BusinessException(ResultCode.PHONE_FORMAT_ERROR);
+        }
+        if ("email".equals(targetType) && !PhoneUtil.isValidEmail(target)) {
+            throw new BusinessException(ResultCode.TARGET_FORMAT_ERROR, "邮箱格式不正确");
+        }
+
+        verifyCode(target, request.getVerifyCode(), "bind_contact");
+
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ResultCode.USER_NOT_FOUND);
+        }
+        if ("phone".equals(targetType)) {
+            Long count = userMapper.selectCount(new LambdaQueryWrapper<User>()
+                    .eq(User::getPhone, target)
+                    .ne(User::getId, userId));
+            if (count > 0) {
+                throw new BusinessException(ResultCode.PHONE_ALREADY_EXISTS);
+            }
+            user.setPhone(target);
+        } else {
+            Long count = userMapper.selectCount(new LambdaQueryWrapper<User>()
+                    .eq(User::getEmail, target)
+                    .ne(User::getId, userId));
+            if (count > 0) {
+                throw new BusinessException(ResultCode.USER_ALREADY_EXISTS, "该邮箱已被注册");
+            }
+            user.setEmail(target);
+        }
+        user.setSecurityScore(Math.min(100, (user.getSecurityScore() == null ? 0 : user.getSecurityScore()) + 10));
+        userMapper.updateById(user);
+
+        auditLogService.log(userId, Constants.AUDIT_MODULE_AUTH, "bind_contact",
+                String.format("{\"target\":\"%s\",\"type\":\"%s\"}", target, targetType));
     }
 
     /**
